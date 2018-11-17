@@ -1,0 +1,30 @@
+--- sort the sales’ person by his/her residential zip code (RANK/DENSERANK/ROWNUMBER)
+
+select p.lastname, 
+	     sp.SalesYTD, 
+	     addr.postalcode,
+	     row_number() over (partition by addr.postalcode order by SP.salesYTD desc) as sale_rnk,
+	     rank()  over (partition by addr.postalcode order by SP.salesYTD desc) as sale_rnk1,
+	     dense_rank() over (partition by addr.postalcode order by SP.salesYTD desc) as sale_rnk2
+from person.person p
+     inner join 
+	   person.BusinessEntityAddress BEA
+	   on p.BusinessEntityID = BEA.BusinessEntityID 
+	   inner join 
+	   person.Address ADDR
+	   on BEA.AddressID =addr.AddressID 
+	   inner join 
+	   sales.SalesPerson SP
+	   on P.BusinessEntityID =SP.BusinessEntityID 
+where BEA.AddressTypeID=2 and sp.SalesYTD <>0
+
+---use adventure works saleheader table to find out monthly sale amount and its percentage against the annual sale.(SUM)
+select YEAR(OrderDate) as yr,
+       MONTH(OrderDate) as mo,
+	     sum(SubTotal) as monthly_sale,
+	     sum(sum(SubTotal)) over (partition by year(orderdate)) as annual_sale,
+       sum(SubTotal)*1.00/
+	        (sum(sum(SubTotal)) over (partition by year(orderdate) )) as pct
+from Sales.SalesOrderHeader
+group by YEAR(OrderDate), MONTH(OrderDate) 
+ 
