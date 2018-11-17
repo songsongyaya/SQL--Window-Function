@@ -1,0 +1,12 @@
+----compute moving average of sales for 5 months window and monthly cumulative sale for each year.
+
+----solution
+select YEAR(OrderDate) as yr,
+       MONTH(OrderDate) as mo,
+	     sum(SubTotal) as monthly_sale,
+	     avg(sum(SubTotal)) over (order by year(orderdate), month(orderdate)
+	             rows between 4 preceding and current row) "5_mon_avg",
+       sum(sum(subtotal)) over (partition by year(orderdate) order by month(orderdate)
+	             rows between unbounded preceding and current row) as annual_cumulative_sale
+from Sales.SalesOrderHeader
+group by YEAR(OrderDate), MONTH(OrderDate) 
