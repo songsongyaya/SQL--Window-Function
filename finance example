@@ -1,0 +1,167 @@
+CREATE TABLE #INTERESTACCRUAL (
+TRANSID INT, 
+ACCOUNTNUM INT, 
+TRANSDATE DATE, 
+GLDATE DATE,
+TRANSAMT DECIMAL(15,6),
+CANCELLFLG CHAR(1) DEFAULT 'N'
+)
+GO
+
+;
+INSERT INTO #INTERESTACCRUAL VALUES 
+(1,1,'2015-01-01','2015-01-01',10,'Y'),
+(2,1,'2015-01-02','2015-01-02',10,'Y'),
+(3,1,'2015-01-03','2015-01-03',12,'Y'),
+(4,1,'2015-01-05','2015-01-05',12,'N'),
+(8,1,'2015-01-06','2016-01-06',12,'N'),
+(5,2,'2015-02-01','2015-02-01',13,'N'),
+(6,2,'2015-02-02','2015-02-02',14,'Y'),
+(7,2,'2015-02-10','2015-02-10',15,'N');
+
+select * from #INTERESTACCRUAL;
+
+solution:
+/******************************************************
+refer to the slides, we need a window id which can group 
+transactions together. 
+Simplist solution is to turn cancell flag to 0 , 1
+then we can sum it up  using csum
+*******************************************************/
+SELECT 
+A.*,
+CASE WHEN A.CANCELLFLG = 'Y' THEN 0 ELSE 1 END,
+sum(case when CANCELLFLG ='y' then 0 else 1 end) 
+over (partition by accountnum order by transdate 
+rows between unbounded preceding and current row) as wndw_id
+FROM #INTERESTACCRUAL A;
+/********************************************************
+The previouse effort does not generate the desired result
+The wndw_id changed at transactionid =4. we need this id 
+remains same on the first non_cancelled trans after the 
+cancelled transaction. Also, if there is a cancelled trans
+after record 5 for account num 1, then wndw_id will not change.
+we need that window id increase when transaction changes from 
+non-calceed to cancelled. Therefore, simple csum will not work. 
+However, we are on the right track to solve such issue using 
+csum. 
+We need to design a variable to meet the following condition . 
+then use csum to get wndw_id
+
+current row flg      prev row flg       result
+       Y                NULL               0
+	   Y                 Y                 0
+	   N                 Y                 0
+	   Y                 N                 1
+	   N                NULL               1
+	   N                 N                 1
+To achive such goal, we need to be able to compare values across
+two rows. We have two solutions here. 
+Approach 1. Use join
+*********************************************************/
+
+with trans As(
+SELECT	A.*,
+		ROW_NUMBER() OVER (PARTITION BY A.ACCOUNTNUM ORDER BY A.TRANSDATE) AS seq
+FROM	#INTERESTACCRUAL A
+),
+-- select * from trans
+wndw AS (
+SELECT	trans.TRANSID,
+		trans.ACCOUNTNUM,
+		trans.TRANSDATE,
+		trans.GLDATE,
+		trans.TRANSAMT,
+		trans.seq,
+		trans.CANCELLFLG AS CURRENT_FLG,
+		prev.CANCELLFLG AS PREV_FLG,
+		CASE
+			WHEN trans.CANCELLFLG = 'Y' AND prev.CANCELLFLG IS NULL THEN 0
+			WHEN trans.CANCELLFLG = 'Y' AND prev.CANCELLFLG ='Y' THEN 0
+			WHEN trans.CANCELLFLG = 'N' AND prev.CANCELLFLG = 'Y' THEN 0
+			WHEN trans.CANCELLFLG = 'Y' AND prev.CANCELLFLG = 'N' THEN 1
+			WHEN trans.CANCELLFLG = 'N' AND prev.CANCELLFLG = 'N' THEN 1
+			WHEN trans.CANCELLFLG = 'N' AND prev.CANCELLFLG is null  THEN 1
+			ELSE NULL --- this should not happen
+		END AS wndw_var
+FROM	trans 
+		LEFT OUTER JOIN
+		trans prev
+		ON
+		trans.ACCOUNTNUM = prev.ACCOUNTNUM and
+		trans.seq = prev.seq +1
+)
+--select * from wndw
+SELECT	wndw.*,
+		SUM(wndw_var) OVER (PARTITION BY ACCOUNTNUM ORDER BY seq 
+		ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS wndw_id 
+FROM	wndw
+;
+
+
+/*****************************************
+Approach 2: use lead and lag function
+********************************************/
+
+with trans as (
+SELECT	TRANSID,
+		ACCOUNTNUM,
+		TRANSDATE,
+		GLDATE,
+		TRANSAMT,
+		CANCELLFLG AS CURRENT_FLG,
+		LAG(CANCELLFLG,1.0) OVER (PARTITION BY ACCOUNTNUM ORDER BY TRANSDATE) AS PREV_FLG
+FROM	#INTERESTACCRUAL
+)
+--- SELECT * FROM TRANS
+
+,
+wndw AS (
+SELECT	TRANSID,
+		ACCOUNTNUM,
+		TRANSDATE,
+		GLDATE,
+		TRANSAMT,
+		CURRENT_FLG,
+		PREV_FLG,
+		CASE
+			WHEN CURRENT_FLG = 'Y' AND PREV_FLG IS NULL THEN 0
+			WHEN CURRENT_FLG = 'Y' AND PREV_FLG ='Y' THEN 0
+			WHEN CURRENT_FLG = 'N' AND PREV_FLG = 'Y' THEN 0
+			WHEN CURRENT_FLG = 'Y' AND PREV_FLG = 'N' THEN 1
+			WHEN CURRENT_FLG = 'N' AND PREV_FLG = 'N' THEN 1
+			WHEN CURRENT_FLG = 'N' AND PREV_FLG is null  THEN 1
+			ELSE NULL --- this should not happen
+		END AS wndw_var
+FROM	trans 
+)
+--SELECT * FROM WNDW
+,
+sol AS(
+SELECT	wndw.*,
+		SUM(wndw_var) OVER (PARTITION BY ACCOUNTNUM ORDER BY TRANSDATE 
+		ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS wndw_id 
+FROM	wndw
+)
+--SELECT * FROM SOL
+,
+SOL1 AS (
+SELECT	SOL.*, 
+		MAX(case when current_flg = 'Y' then null else gldate end) 
+		over (partition by ACCOUNTNUM, wndw_id) as new_gl_dt
+FROM	SOL
+)
+
+--SELECT * FROM SOL1
+
+
+SELECT
+		-1 * transid AS derived_trans_id, 
+		accountnum,
+		transdate,
+		new_gl_dt as derived_gl_dt,
+		transamt * -1 as dervied_transamt,
+		'N' AS CANCELLFLG ,
+		'Y' AS DERVIED_FLG
+FROM	SOL1
+WHERE	CURRENT_FLG = 'Y'
